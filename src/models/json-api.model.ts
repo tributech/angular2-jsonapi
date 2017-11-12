@@ -5,18 +5,19 @@ import { Observable } from 'rxjs/Observable';
 import { JsonApiDatastore, ModelType } from '../services/json-api-datastore.service';
 import { ModelConfig } from '../interfaces/model-config.interface';
 import * as _ from 'lodash';
-import { AttributeMetadata } from '../constants/symbols';
+import { AttributeMetadata, HasManyRelationshipMetadata } from '../constants/symbols';
 
 export class JsonApiModel {
   id: string;
   [key: string]: any;
 
-  // tslint:disable-next-line:variable-name
-  constructor(private _datastore: JsonApiDatastore, data?: any) {
-    if (data) {
-      this.id = data.id;
-      Object.assign(this, data.attributes);
-    }
+  constructor(
+    private datastore: JsonApiDatastore,
+    data: any = {},
+    relationships: object = {}
+  ) {
+    this.id = data.id;
+    this.updateModel(data.attributes, relationships);
   }
 
   syncRelationships(data: any, included: any, level: number): void {
@@ -26,9 +27,15 @@ export class JsonApiModel {
     }
   }
 
+  public updateModel(attributes: any, relationships: object = {}) {
+    const serializedAttributes = this.transformSerializedNamesToPropertyNames(attributes);
+    Object.assign(this, serializedAttributes);
+    this.relationships = relationships;
+  }
+
   save(params?: any, headers?: Headers): Observable<this> {
     const attributesMetadata: any = this[AttributeMetadata];
-    return this._datastore.saveRecord(attributesMetadata, this, params, headers);
+    return this.datastore.saveRecord(attributesMetadata, this, params, headers);
   }
 
   get hasDirtyAttributes() {
@@ -73,7 +80,7 @@ export class JsonApiModel {
 
 
   private parseHasMany(data: any, included: any, level: number): void {
-    const hasMany: any = Reflect.getMetadata('HasMany', this);
+    const hasMany: any = Reflect.getMetadata(HasManyRelationshipMetadata, this);
 
     if (hasMany) {
       for (const metadata of hasMany) {
@@ -89,7 +96,7 @@ export class JsonApiModel {
             if (!includes(modelTypesFetched, typeName)) {
               modelTypesFetched.push(typeName);
               // tslint:disable-next-line:max-line-length
-              const modelType: ModelType<this> = Reflect.getMetadata('JsonApiDatastoreConfig', this._datastore.constructor).models[typeName];
+              const modelType: ModelType<this> = Reflect.getMetadata('JsonApiDatastoreConfig', this.datastore.constructor).models[typeName];
 
               if (modelType) {
                 // tslint:disable-next-line:max-line-length
@@ -114,6 +121,8 @@ export class JsonApiModel {
   private parseBelongsTo(data: any, included: any, level: number): void {
     const belongsTo: any = Reflect.getMetadata('BelongsTo', this);
 
+
+
     if (belongsTo) {
       for (const metadata of belongsTo) {
         const relationship: any = data.relationships ? data.relationships[metadata.relationship] : null;
@@ -122,7 +131,7 @@ export class JsonApiModel {
           if (dataRelationship) {
             const typeName: string = dataRelationship.type;
             // tslint:disable-next-line:max-line-length
-            const modelType: ModelType<this> = Reflect.getMetadata('JsonApiDatastoreConfig', this._datastore.constructor).models[typeName];
+            const modelType: ModelType<this> = Reflect.getMetadata('JsonApiDatastoreConfig', this.datastore.constructor).models[typeName];
             if (modelType) {
               const relationshipModel = this.getBelongsToRelationship(
                 modelType,
@@ -188,20 +197,33 @@ export class JsonApiModel {
 
       return newObject;
     }
-    return this._datastore.peekRecord(modelType, id);
+    return this.datastore.peekRecord(modelType, id);
   }
 
   private createOrPeek<T extends JsonApiModel>(modelType: ModelType<T>, data: any): T {
-    const peek = this._datastore.peekRecord(modelType, data.id);
+    const peek = this.datastore.peekRecord(modelType, data.id);
 
     if (peek) {
       _.extend(peek, data.attributes);
       return peek;
     }
     
-    const newObject: T = new modelType(this._datastore, data);
-    this._datastore.addToStore(newObject);
+    const newObject: T = new modelType(this.datastore, data);
+    this.datastore.addToStore(newObject);
     
     return newObject;
+  }
+
+  private transformSerializedNamesToPropertyNames<T extends JsonApiModel>(attributes: any) {
+    const serializedNameToPropertyName = Reflect.getMetadata('AttributeMapping', this);
+    const properties: any = {};
+
+    Object.keys(serializedNameToPropertyName).forEach((serializedName) => {
+      if (attributes[serializedName]) {
+        properties[serializedNameToPropertyName[serializedName]] = attributes[serializedName];
+      }
+    });
+
+    return properties;
   }
 }

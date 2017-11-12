@@ -1,3 +1,9 @@
+#
+
+### BREAKING CHANGES
+
+- Remove .query function - use .findAll instead
+
 # [4.0.1] (2017-11-06)
 
 ### Bug fixes

@@ -13,9 +13,10 @@ import { JsonApiQueryData } from '../models/json-api-query-data';
 import * as qs from 'qs';
 import { DatastoreConfig } from '../interfaces/datastore-config.interface';
 import { ModelConfig } from '../interfaces/model-config.interface';
-import { AttributeMetadata } from '../constants/symbols';
+import { AttributeMetadata, HasManyRelationshipMetadata } from '../constants/symbols';
 
-export type ModelType<T extends JsonApiModel> = { new(datastore: JsonApiDatastore, data: any): T; };
+// tslint:disable-next-line:max-line-length
+export type ModelType<T extends JsonApiModel> = { new(datastore: JsonApiDatastore, data: any, relationships?: object): T; };
 
 @Injectable()
 export class JsonApiDatastore {
@@ -29,20 +30,8 @@ export class JsonApiDatastore {
   
   protected config: DatastoreConfig;
 
-  constructor(private http: Http) {}
-
-  /** @deprecated - use findAll method to take all models **/
-  query<T extends JsonApiModel>(
-    modelType: ModelType<T>,
-    params?: any,
-    headers?: Headers,
-    customUrl?: string
-  ): Observable<T[]> {
-    const options: RequestOptions = this.getOptions(headers);
-    const url: string = this.buildUrl(modelType, params, undefined, customUrl);
-    return this.http.get(url, options)
-      .map((res: any) => this.extractQueryData(res, modelType))
-      .catch((res: any) => this.handleError(res));
+  constructor(private http: Http) {
+    console.log('3 fdsfsddsfsdfdsf hgg');
   }
 
   findAll<T extends JsonApiModel>(
@@ -74,8 +63,8 @@ export class JsonApiDatastore {
       .catch((res: any) => this.handleError(res));
   }
 
-  createRecord<T extends JsonApiModel>(modelType: ModelType<T>, data?: any): T {
-    return new modelType(this, { attributes: data });
+  public createRecord<T extends JsonApiModel>(modelType: ModelType<T>, attributes?: object, relationships?: object): T {
+    return new modelType(this, { attributes }, relationships);
   }
 
   private _getDirtyAttributes(attributesMetadata: any): { string: any} {
@@ -265,11 +254,6 @@ export class JsonApiDatastore {
     }
   }
 
-  private deserializeModel<T extends JsonApiModel>(modelType: ModelType<T>, data: any) {
-    data.attributes = this.transformSerializedNamesToPropertyNames(modelType, data.attributes);
-    return new modelType(this, data);
-  }
-
   private extractRecordData<T extends JsonApiModel>(res: Response, modelType: ModelType<T>, model?: T): T {
     const body: any = res.json();
 
@@ -278,18 +262,19 @@ export class JsonApiDatastore {
     }
 
     if (model) {
-      model.id = body.data.id;
-      Object.assign(model, body.data.attributes);
-    }
-
-    // tslint:disable-next-line:no-param-reassign
-    model = model || this.deserializeModel(modelType, body.data);
-
-    this.addToStore(model);
-    if (body.included) {
-      model.syncRelationships(body.data, body.included, 0);
+      model.id = body.data.id;  // TODO check if this is necessary
+      model.updateModel(body.data.attributes);
+    } else {
+      // tslint:disable-next-line:no-param-reassign
+      model = this.createRecord(modelType, body.data.attributes, body.relationships);
       this.addToStore(model);
     }
+    
+    const includedModels: Array<JsonApiModel> = body.included || [];
+
+    includedModels.forEach((includedModelData) => {
+      // TODO
+    });
 
     return model;
   }
@@ -350,14 +335,10 @@ export class JsonApiDatastore {
   public addToStore(modelOrModels: JsonApiModel | JsonApiModel[]): void {
     const models = Array.isArray(modelOrModels) ? modelOrModels : [modelOrModels];
     const type: string = models[0].modelConfig.type;
-    let typeStore = this._store[type];
-
-    if (!typeStore) {
-      typeStore = this._store[type] = {};
-    }
+    this._store[type] = this._store[type] || {};
 
     for (const model of models) {
-      typeStore[model.id] = model;
+      this._store[type][model.id] = model;
     }
   }
 
@@ -386,7 +367,7 @@ export class JsonApiDatastore {
     for (const relationship in relationships) {
       if (relationships.hasOwnProperty(relationship) && model.hasOwnProperty(relationship)) {
         const relationshipModel: JsonApiModel = model[relationship];
-        const hasMany: any[] = Reflect.getMetadata('HasMany', relationshipModel);
+        const hasMany: any[] = Reflect.getMetadata(HasManyRelationshipMetadata, relationshipModel);
         const propertyHasMany: any = find(hasMany, (property) => {
           return modelsTypes[property.relationship] === model.constructor;
         });

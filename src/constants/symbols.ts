@@ -1,2 +1,3 @@
-// tslint:disable-next-line:variable-name
+// tslint:disable:variable-name
 export const AttributeMetadata = Symbol('AttributeMetadata');
+export const HasManyRelationshipMetadata: string = 'HasMany';
