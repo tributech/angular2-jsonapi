@@ -7,33 +7,65 @@ import { ModelConfig } from '../interfaces/model-config.interface';
 import * as _ from 'lodash';
 import { AttributeMetadata, HasManyRelationshipMetadata } from '../constants/symbols';
 
+export type ModelData = {
+  id?: string;
+  attributes?: object;
+  relationships?: object;
+};
+
 export class JsonApiModel {
-  id: string;
+  public id: string | undefined;
   [key: string]: any;
 
   constructor(
     private datastore: JsonApiDatastore,
-    data: any = {},
-    relationships: object = {}
+    private modelData: ModelData
   ) {
-    this.id = data.id;
-    this.updateModel(data.attributes, relationships);
-  }
-
-  syncRelationships(data: any, included: any, level: number): void {
-    if (data) {
-      this.parseHasMany(data, included, level);
-      this.parseBelongsTo(data, included, level);
-    }
+    this.id = modelData.id;
+    this.updateModel(modelData.attributes, modelData.relationships);
   }
 
   public updateModel(attributes: any, relationships: object = {}) {
     const serializedAttributes = this.transformSerializedNamesToPropertyNames(attributes);
     Object.assign(this, serializedAttributes);
-    this.relationships = relationships;
+    this.relationships = relationships || {};
+
+    Object.keys(this.relationships).forEach((relationshipName: string) => {
+      const relationshipData = this.relationships[relationshipName] || {};
+
+      if (relationshipData.data) {
+        // HasMany
+        if (relationshipData.data instanceof Array) {
+          Object.defineProperty(this, relationshipName, {
+            get: () => {
+              const modelTypes = Reflect.getMetadata('JsonApiDatastoreConfig', this.datastore.constructor).models;
+
+              const models = relationshipData.data.map((modelData: any) => {
+                // TODO type should be fetched from model's metadata
+                const modelType = modelTypes[modelData.type];
+                return this.datastore.peekRecord(modelType, modelData.id);
+              });
+
+              const hasMissingModels: boolean = models.some((model: any) => !model);
+
+              return hasMissingModels ? undefined : models;
+            }
+          });
+        } else {
+          Object.defineProperty(this, relationshipName, {
+            get: () => {
+              const modelTypes = Reflect.getMetadata('JsonApiDatastoreConfig', this.datastore.constructor).models;
+              // TODO type should be fetched from model's metadata
+              const modelType = modelTypes[relationshipData.data.type];
+              return this.datastore.peekRecord(modelType, relationshipData.data.id);
+            }
+          });
+        }
+      }
+    });
   }
 
-  save(params?: any, headers?: Headers): Observable<this> {
+  public save(params?: any, headers?: Headers): Observable<this> {
     const attributesMetadata: any = this[AttributeMetadata];
     return this.datastore.saveRecord(attributesMetadata, this, params, headers);
   }
@@ -78,144 +110,8 @@ export class JsonApiModel {
     return Reflect.getMetadata('JsonApiModelConfig', this.constructor);
   }
 
-
-  private parseHasMany(data: any, included: any, level: number): void {
-    const hasMany: any = Reflect.getMetadata(HasManyRelationshipMetadata, this);
-
-    if (hasMany) {
-      for (const metadata of hasMany) {
-        const relationship: any = data.relationships ? data.relationships[metadata.relationship] : null;
-
-        if (relationship && relationship.data && relationship.data.length > 0) {
-          let allModels: JsonApiModel[] = [];
-          const modelTypesFetched: any = [];
-
-          for (const typeIndex of Object.keys(relationship.data)) {
-            const typeName: string = relationship.data[typeIndex].type;
-
-            if (!includes(modelTypesFetched, typeName)) {
-              modelTypesFetched.push(typeName);
-              // tslint:disable-next-line:max-line-length
-              const modelType: ModelType<this> = Reflect.getMetadata('JsonApiDatastoreConfig', this.datastore.constructor).models[typeName];
-
-              if (modelType) {
-                // tslint:disable-next-line:max-line-length
-                const relationshipModels: JsonApiModel[] = this.getHasManyRelationship(modelType, relationship.data, included, typeName, level);
-                if (relationshipModels.length > 0) {
-                  allModels = allModels.concat(relationshipModels);
-                }
-              } else {
-                throw { message: 'parseHasMany - Model type for relationship ' + typeName + ' not found.' };
-              }
-            }
-
-            if (allModels.length > 0) {
-              this[metadata.propertyName] = allModels;
-            }
-          }
-        }
-      }
-    }
-  }
-
-  private parseBelongsTo(data: any, included: any, level: number): void {
-    const belongsTo: any = Reflect.getMetadata('BelongsTo', this);
-
-
-
-    if (belongsTo) {
-      for (const metadata of belongsTo) {
-        const relationship: any = data.relationships ? data.relationships[metadata.relationship] : null;
-        if (relationship && relationship.data) {
-          const dataRelationship: any = (relationship.data instanceof Array) ? relationship.data[0] : relationship.data;
-          if (dataRelationship) {
-            const typeName: string = dataRelationship.type;
-            // tslint:disable-next-line:max-line-length
-            const modelType: ModelType<this> = Reflect.getMetadata('JsonApiDatastoreConfig', this.datastore.constructor).models[typeName];
-            if (modelType) {
-              const relationshipModel = this.getBelongsToRelationship(
-                modelType,
-                dataRelationship,
-                included,
-                typeName,
-                level
-              );
-
-              if (relationshipModel) {
-                this[metadata.propertyName] = relationshipModel;
-              }
-            } else {
-              throw { message: 'parseBelongsTo - Model type for relationship ' + typeName + ' not found.' };
-            }
-          }
-        }
-      }
-    }
-  }
-
-  private getHasManyRelationship<T extends JsonApiModel>(
-    modelType: ModelType<T>,
-    data: any,
-    included: any,
-    typeName: string,
-    level: number
-  ): Array<T> {
-    const relationshipList: Array<T> = [];
-
-    data.forEach((item: any) => {
-      const relationshipData: any = find(included, { id: item.id, type: typeName });
-
-      if (relationshipData) {
-        const newObject: T = this.createOrPeek(modelType, relationshipData);
-
-        if (level <= 1) {
-          newObject.syncRelationships(relationshipData, included, level + 1);
-        }
-        relationshipList.push(newObject);
-      }
-    });
-    return relationshipList;
-  }
-
-
-  private getBelongsToRelationship<T extends JsonApiModel>(
-    modelType: ModelType<T>,
-    data: any,
-    included: any,
-    typeName: string,
-    level: number
-  ): T | null {
-    const id: string = data.id;
-    const relationshipData: any = find(included, { id, type: typeName });
-
-    if (relationshipData) {
-      const newObject: T = this.createOrPeek(modelType, relationshipData);
-
-      if (level <= 1) {
-        newObject.syncRelationships(relationshipData, included, level + 1);
-      }
-
-      return newObject;
-    }
-    return this.datastore.peekRecord(modelType, id);
-  }
-
-  private createOrPeek<T extends JsonApiModel>(modelType: ModelType<T>, data: any): T {
-    const peek = this.datastore.peekRecord(modelType, data.id);
-
-    if (peek) {
-      _.extend(peek, data.attributes);
-      return peek;
-    }
-    
-    const newObject: T = new modelType(this.datastore, data);
-    this.datastore.addToStore(newObject);
-    
-    return newObject;
-  }
-
-  private transformSerializedNamesToPropertyNames<T extends JsonApiModel>(attributes: any) {
-    const serializedNameToPropertyName = Reflect.getMetadata('AttributeMapping', this);
+  private transformSerializedNamesToPropertyNames<T extends JsonApiModel>(attributes: any = {}) {
+    const serializedNameToPropertyName = Reflect.getMetadata('AttributeMapping', this) || {};
     const properties: any = {};
 
     Object.keys(serializedNameToPropertyName).forEach((serializedName) => {

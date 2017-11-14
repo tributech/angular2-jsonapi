@@ -7,7 +7,7 @@ import 'rxjs/add/operator/map';
 import 'rxjs/add/operator/catch';
 import 'rxjs/add/observable/throw';
 import 'rxjs/add/observable/of';
-import { JsonApiModel } from '../models/json-api.model';
+import { JsonApiModel, ModelData } from '../models/json-api.model';
 import { ErrorResponse } from '../models/error-response.model';
 import { JsonApiQueryData } from '../models/json-api-query-data';
 import * as qs from 'qs';
@@ -16,7 +16,7 @@ import { ModelConfig } from '../interfaces/model-config.interface';
 import { AttributeMetadata, HasManyRelationshipMetadata } from '../constants/symbols';
 
 // tslint:disable-next-line:max-line-length
-export type ModelType<T extends JsonApiModel> = { new(datastore: JsonApiDatastore, data: any, relationships?: object): T; };
+export type ModelType<T extends JsonApiModel> = { new(datastore: JsonApiDatastore, modelData: ModelData): T; };
 
 @Injectable()
 export class JsonApiDatastore {
@@ -30,9 +30,7 @@ export class JsonApiDatastore {
   
   protected config: DatastoreConfig;
 
-  constructor(private http: Http) {
-    console.log('3 fdsfsddsfsdfdsf hgg');
-  }
+  constructor(private http: Http) { }
 
   findAll<T extends JsonApiModel>(
     modelType: ModelType<T>,
@@ -44,7 +42,8 @@ export class JsonApiDatastore {
     const url: string = this.buildUrl(modelType, params, undefined, customUrl);
 
     return this.http.get(url, options)
-      .map((res: any) => this.extractQueryData(res, modelType, true))
+      .map((res: any) => this.parseResponse(res))
+      .map((parsedResponse: any) => this.extractQueryData(parsedResponse, modelType, true))
       .catch((res: any) => this.handleError(res));
   }
 
@@ -59,12 +58,16 @@ export class JsonApiDatastore {
     const url: string = this.buildUrl(modelType, params, id, customUrl);
 
     return this.http.get(url, options)
-      .map((res) => this.extractRecordData(res, modelType))
+      .map((res) => this.parseResponse(res))
+      .map((parsedResponse) => this.extractRecordData(parsedResponse))
       .catch((res: any) => this.handleError(res));
   }
 
-  public createRecord<T extends JsonApiModel>(modelType: ModelType<T>, attributes?: object, relationships?: object): T {
-    return new modelType(this, { attributes }, relationships);
+  public createRecord<T extends JsonApiModel>(
+    modelType: ModelType<T>,
+    modelData: ModelData
+  ): T {
+    return new modelType(this, modelData);
   }
 
   private _getDirtyAttributes(attributesMetadata: any): { string: any} {
@@ -114,17 +117,15 @@ export class JsonApiDatastore {
     }
 
     return httpCall
-      .map((res) => res.status === 201 ? this.extractRecordData(res, modelType, model) : model)
+      .map((res) => this.parseResponse(res))
+      .map((parsedResponse) => this.extractRecordData(parsedResponse))
       .catch((error) => {
         console.error(error);
         return Observable.of(model);
       })
       .map((res) => this.resetMetadataAttributes(res, attributesMetadata, modelType))
-      .map((res) => this.updateRelationships(res, relationships))
       .catch((res) => this.handleError(res));
   }
-
-
 
   deleteRecord<T extends JsonApiModel>(
     modelType: ModelType<T>,
@@ -182,6 +183,7 @@ export class JsonApiDatastore {
     for (const key in data) {
       if (data.hasOwnProperty(key)) {
         if (data[key] instanceof JsonApiModel) {
+          // tslint:disable-next-line:no-param-reassign
           relationships = relationships || {};
           
           if (data[key].id) {
@@ -190,6 +192,7 @@ export class JsonApiDatastore {
             };
           }
         } else if (data[key] instanceof Array && data[key].length > 0 && this.isValidToManyRelation(data[key])) {
+          // tslint:disable-next-line:no-param-reassign
           relationships = relationships || {};
 
           const relationshipData = data[key]
@@ -228,23 +231,18 @@ export class JsonApiDatastore {
   }
 
   private extractQueryData<T extends JsonApiModel>(
-    res: any,
+    body: any,
     modelType: ModelType<T>,
     withMeta = false
   ): T[] | JsonApiQueryData<T> {
-    const body: any = res.json();
-    const models: T[] = [];
+    const models: Array<T> = body.data.map((modelData: any) => {
+      return this.extractRecordData({ data: modelData });
+    });
 
-    body.data.forEach((data: any) => {
-      const model: T = this.deserializeModel(modelType, data);
-      this.addToStore(model);
-
-      if (body.included) {
-        model.syncRelationships(data, body.included, 0);
-        this.addToStore(model);
-      }
-
-      models.push(model);
+    const includedModels: Array<JsonApiModel> = body.included || [];
+    
+    includedModels.forEach((includedModelData) => {
+      this.extractRecordData({ data: includedModelData });
     });
 
     if (withMeta && withMeta === true) {
@@ -254,29 +252,36 @@ export class JsonApiDatastore {
     }
   }
 
-  private extractRecordData<T extends JsonApiModel>(res: Response, modelType: ModelType<T>, model?: T): T {
-    const body: any = res.json();
+  private extractRecordData<T extends JsonApiModel>(recordData: any): T {
+    let extractedModel: T;
 
-    if (!body) {
-      throw new Error('no body in response');
-    }
+    const { data, included } = recordData;
+
+    const modelType: ModelType<T> = this.getConstructorForModelType(data.type);
+
+    const modelId: string = data.id;
+    const model: T | null = this.peekRecord(modelType, modelId);
 
     if (model) {
-      model.id = body.data.id;  // TODO check if this is necessary
-      model.updateModel(body.data.attributes);
+      extractedModel = model;
+      model.updateModel(data.attributes, data.relationships);
     } else {
-      // tslint:disable-next-line:no-param-reassign
-      model = this.createRecord(modelType, body.data.attributes, body.relationships);
-      this.addToStore(model);
+      extractedModel = this.createRecord(modelType, data);
+      this.addToStore(extractedModel);
     }
     
-    const includedModels: Array<JsonApiModel> = body.included || [];
+    const includedModels: Array<JsonApiModel> = included || [];
 
     includedModels.forEach((includedModelData) => {
-      // TODO
+      this.extractRecordData({ data: includedModelData });
     });
 
-    return model;
+    return extractedModel;
+  }
+
+  private getConstructorForModelType<T extends JsonApiModel>(modelType: string): ModelType<T> {
+    const modelTypes = Reflect.getMetadata('JsonApiDatastoreConfig', this.constructor).models;
+    return modelTypes[modelType];
   }
 
   protected handleError(error: any): ErrorObservable {
@@ -292,7 +297,7 @@ export class JsonApiDatastore {
         return Observable.throw(errors);
       }
     } catch (e) {
-        // no valid JSON
+      // no valid JSON
     }
 
     console.error(errMsg);
@@ -338,7 +343,9 @@ export class JsonApiDatastore {
     this._store[type] = this._store[type] || {};
 
     for (const model of models) {
-      this._store[type][model.id] = model;
+      if (model.id) {
+        this._store[type][model.id] = model;
+      }
     }
   }
 
@@ -361,53 +368,22 @@ export class JsonApiDatastore {
     return res;
   }
 
-  private updateRelationships(model: JsonApiModel, relationships: any): JsonApiModel {
-    const modelsTypes: any = Reflect.getMetadata('JsonApiDatastoreConfig', this.constructor).models;
-
-    for (const relationship in relationships) {
-      if (relationships.hasOwnProperty(relationship) && model.hasOwnProperty(relationship)) {
-        const relationshipModel: JsonApiModel = model[relationship];
-        const hasMany: any[] = Reflect.getMetadata(HasManyRelationshipMetadata, relationshipModel);
-        const propertyHasMany: any = find(hasMany, (property) => {
-          return modelsTypes[property.relationship] === model.constructor;
-        });
-
-        if (propertyHasMany) {
-          relationshipModel[propertyHasMany.propertyName] = relationshipModel[propertyHasMany.propertyName] || [];
-          
-          const indexOfModel = relationshipModel[propertyHasMany.propertyName].indexOf(model);
-
-          if (indexOfModel === -1) {
-            relationshipModel[propertyHasMany.propertyName].push(model);
-          } else {
-            relationshipModel[propertyHasMany.propertyName][indexOfModel] = model;
-          }
-        }
-      }
-    }
-
-    return model;
-  }
-
   private get datastoreConfig(): DatastoreConfig {
     const configFromDecorator: DatastoreConfig = Reflect.getMetadata('JsonApiDatastoreConfig', this.constructor);
     return Object.assign(configFromDecorator, this.config);
   }
 
-  private transformSerializedNamesToPropertyNames<T extends JsonApiModel>(modelType: ModelType<T>, attributes: any) {
-    const serializedNameToPropertyName = this.getModelPropertyNames(modelType.prototype);
-    const properties: any = {};
-    
-    Object.keys(serializedNameToPropertyName).forEach((serializedName) => {
-      if (attributes[serializedName]) {
-        properties[serializedNameToPropertyName[serializedName]] = attributes[serializedName];
-      }
-    });
-
-    return properties;
-  }
-
   private getModelPropertyNames(model: JsonApiModel) {
     return Reflect.getMetadata('AttributeMapping', model);
+  }
+
+  private parseResponse(response: Response) {
+    const body: any = response.json();
+
+    if (!body) {
+      throw new Error('no body in response');
+    }
+
+    return body;
   }
 }
