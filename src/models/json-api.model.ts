@@ -11,7 +11,7 @@ export class JsonApiModel {
   public modelInitialization: boolean = false;
 
   [key: string]: any;
-  meta: any [];
+  meta: Object;
 
   lastSyncModels: Array<any>;
 
