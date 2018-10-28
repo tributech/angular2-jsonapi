@@ -12,6 +12,7 @@ var JsonApiModel = /** @class */ (function () {
         if (data) {
             this.modelInitialization = true;
             this.id = data.id;
+            this.meta = {};
             Object.assign(this, data.attributes);
             if (data.meta) {
                 Object.assign(this.meta, data.meta);

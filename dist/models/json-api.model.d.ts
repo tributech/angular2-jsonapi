@@ -6,7 +6,7 @@ export declare class JsonApiModel {
     id: string;
     modelInitialization: boolean;
     [key: string]: any;
-    meta: Object;
+    meta: {};
     lastSyncModels: Array<any>;
     constructor(_datastore: JsonApiDatastore, data?: any);
     isModelInitialization(): boolean;
