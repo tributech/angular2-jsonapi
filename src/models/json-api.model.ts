@@ -11,6 +11,7 @@ export class JsonApiModel {
   public modelInitialization: boolean = false;
 
   [key: string]: any;
+  meta: any [];
 
   lastSyncModels: Array<any>;
 
@@ -20,6 +21,10 @@ export class JsonApiModel {
       this.modelInitialization = true;
       this.id = data.id;
       Object.assign(this, data.attributes);
+      if (data.meta) {
+        Object.assign(this.meta, data.meta);
+      }
+
       this.modelInitialization = false;
     }
   }
