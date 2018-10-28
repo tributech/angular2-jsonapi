@@ -1,0 +1,1 @@
+{"summaries":[{"symbol":{"__symbol":0,"members":[]},"metadata":{"__symbolic":"function","parameters":["options"],"value":{"__symbolic":"error","message":"Function call not supported","line":5,"character":9},"defaults":[{}]}}],"symbols":[{"__symbol":0,"name":"JsonAttribute","filePath":"/Users/colin/dev/kegit/angular2-jsonapi/src/decorators/json-attribute.decorator.d.ts"}]}
